@@ -80,19 +80,23 @@ run_sql_postgres() {
   fi
 }
 
-# Create databases (idempotent)
-run_sql_postgres "
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$DEV_DB') THEN
-    CREATE DATABASE $DEV_DB;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$AUTH_DB') THEN
-    CREATE DATABASE $AUTH_DB;
-  END IF;
-END
-\$\$;
-"
+# Query that returns single value (for existence checks)
+run_sql_postgres_query() {
+  local sql="$1"
+  if command -v psql >/dev/null 2>&1; then
+    psql "$CONN_STR" -t -A -v ON_ERROR_STOP=1 -c "$sql" 2>/dev/null
+  else
+    docker run --rm -e PGPASSWORD="$POSTGRES_PASSWORD" \
+      postgres:15-alpine psql -h "$DATABASE_NAME" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d postgres -t -A -v ON_ERROR_STOP=1 -c "$sql" 2>/dev/null
+  fi
+}
+
+# Create databases (PostgreSQL does not allow CREATE DATABASE inside a function/block)
+# Check if exists first, then create
+dev_exists=$(run_sql_postgres_query "SELECT count(*) FROM pg_database WHERE datname = '$DEV_DB'" | tr -d ' \r\n' || echo "0")
+auth_exists=$(run_sql_postgres_query "SELECT count(*) FROM pg_database WHERE datname = '$AUTH_DB'" | tr -d ' \r\n' || echo "0")
+[ "${dev_exists:-0}" = "0" ] && run_sql_postgres "CREATE DATABASE $DEV_DB;"
+[ "${auth_exists:-0}" = "0" ] && run_sql_postgres "CREATE DATABASE $AUTH_DB;"
 
 # Create users (skip if exists)
 run_sql_postgres "

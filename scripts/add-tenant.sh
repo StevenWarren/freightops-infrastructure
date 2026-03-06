@@ -35,6 +35,9 @@ mkdir -p "$TENANT_DIR"
 # Default domain
 DEFAULT_DOMAIN="${TENANT_ID}.freightopsconnect.com"
 
+# Sanitize tenant ID for DB names (hyphens -> underscores; PostgreSQL identifiers can't have hyphens)
+DB_TENANT_ID="${TENANT_ID//-/_}"
+
 cat > "$ENV_FILE" << EOF
 # Tenant identification
 TENANT_ID=$TENANT_ID
@@ -55,11 +58,11 @@ DATABASE_NAME=172.23.0.10
 POSTGRES_USER=freightops-maintfreightops-ma
 POSTGRES_PASSWORD=CHANGE_ME_MAINTENANCE_PASSWORD
 POSTGRES_PORT=5432
-DEV_DB=fo_app_${TENANT_ID}
-DEV_DB_USER=fo_${TENANT_ID}
+DEV_DB=fo_app_${DB_TENANT_ID}
+DEV_DB_USER=fo_${DB_TENANT_ID}
 DEV_DB_PASSWORD=CHANGE_ME
-AUTH_DB=fo_auth_${TENANT_ID}
-AUTH_DB_USER=fo_auth_${TENANT_ID}
+AUTH_DB=fo_auth_${DB_TENANT_ID}
+AUTH_DB_USER=fo_auth_${DB_TENANT_ID}
 AUTH_DB_PASSWORD=CHANGE_ME
 
 ConnectionStrings__PgConnection="Server=\${DATABASE_NAME};Database=\${DEV_DB};Port=\${POSTGRES_PORT};User Id=\${DEV_DB_USER};Password=\${DEV_DB_PASSWORD};"
