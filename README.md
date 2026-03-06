@@ -1,89 +1,114 @@
-# Freightops Infrastructure
+# FreightOps Infrastructure
 
-# Docker Compose + Certbot Renewal with systemd Timer (Amazon Linux)
+Multi-tenant Docker Compose deployment for FreightOps. Supports multiple tenants with isolated configurations (database, webhook, dashboard) while sharing nginx reverse proxy, certbot, pgadmin, and watchtower.
 
-This document describes how to automate **Let's Encrypt certificate renewal** for a Docker Compose stack using **systemd services and timers** on Amazon Linux.
+## Architecture
 
-The stack assumes:
+- **Shared services**: nginx-proxy (reverse proxy only), certbot, pgadmin, watchtower
+- **Per-tenant services**: freightops-api, freightops-daemon, freightops-dashboard (one container each per tenant)
 
-* Docker Compose project located at:
-  `/home/docker`
-* The stack includes an **nginx container** serving the webroot for Certbot.
-* A **certbot container** defined in the `docker-compose.yml`.
-
-The automation will:
-
-1. Ensure the Docker stack is running
-2. Execute the Certbot container
-3. Reload nginx so the updated certificate is used
-4. Run automatically twice daily using a **systemd timer**
-
----
-
-# 1. Create the Renewal Script
-
-Create the script:
-
-```bash
-sudo nano /home/docker/run-certbot.sh
+```
+                    ┌─────────────────┐
+                    │  nginx-proxy    │
+                    │  (port 80/443)  │
+                    └────────┬────────┘
+         ┌───────────────────┼───────────────────┐
+         │                   │                   │
+         ▼                   ▼                   ▼
+  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+  │ covan       │    │ tenant2     │    │ tenant3     │
+  │ dashboard   │    │ dashboard   │    │ dashboard   │
+  │ api         │    │ api         │    │ api         │
+  │ daemon      │    │ daemon      │    │ daemon      │
+  └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
-Paste the following:
+## Quick Start
+
+### 1. Initial setup (first time)
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
+# Create certbot directories (if not present)
+mkdir -p config/certbot-conf config/certbot-www
 
-COMPOSE_DIR="/home/docker"
+# Generate nginx config from tenants
+./scripts/generate-nginx.sh
 
-cd "$COMPOSE_DIR"
+# Start shared infrastructure
+./scripts/manage-tenants.sh shared-start
 
-# Detect compose command
-if docker compose version >/dev/null 2>&1; then
-  DC="docker compose"
-elif command -v docker-compose >/dev/null 2>&1; then
-  DC="docker-compose"
-else
-  echo "docker compose not found"
-  exit 1
-fi
-
-# Check if nginx container is running
-RUNNING=$($DC ps --services --filter "status=running" | grep -c "^nginx$" || true)
-
-if [ "$RUNNING" -eq 0 ]; then
-  echo "Stack not running. Starting stack..."
-  $DC up -d
-else
-  echo "Stack already running."
-fi
-
-echo "Running certbot..."
-$DC run --rm certbot
-
-echo "Reloading nginx..."
-$DC exec -T nginx nginx -s reload || $DC restart nginx
-
-echo "Certificate renewal complete."
+# Start tenant(s)
+./scripts/manage-tenants.sh start covan
 ```
 
-Make it executable:
+### 2. Production deployment path
+
+For production at `/home/docker`:
 
 ```bash
-chmod +x /home/docker/run-certbot.sh
+export COMPOSE_DIR=/home/docker
+cd /home/docker
+./scripts/manage-tenants.sh shared-start
+./scripts/manage-tenants.sh start covan
 ```
 
----
+## Tenant Management
 
-# 2. Create the systemd Service
+| Command | Description |
+|---------|-------------|
+| `./scripts/manage-tenants.sh shared-start` | Start nginx-proxy, certbot, pgadmin, watchtower |
+| `./scripts/manage-tenants.sh shared-stop` | Stop shared infrastructure |
+| `./scripts/manage-tenants.sh start [tenant-id]` | Start tenant(s). Omit id to start all |
+| `./scripts/manage-tenants.sh stop [tenant-id]` | Stop tenant(s) |
+| `./scripts/manage-tenants.sh up [tenant-id]` | Pull images and start tenant(s) |
+| `./scripts/manage-tenants.sh logs <tenant-id>` | Follow tenant logs |
+| `./scripts/manage-tenants.sh add <tenant-id>` | Add a new tenant |
+| `./scripts/manage-tenants.sh create-db <tenant-id>` | Create PostgreSQL databases and users for a tenant |
+| `./scripts/manage-tenants.sh list` | List all tenants |
 
-Create a systemd service that runs the script.
+## Adding a New Tenant
 
 ```bash
-sudo nano /etc/systemd/system/certbot-renew.service
+# 1. Scaffold tenant (creates tenants/<id>/.env)
+./scripts/manage-tenants.sh add tenant2
+
+# 2. Edit tenants/tenant2/.env with real credentials:
+#    - POSTGRES_PASSWORD (maintenance user - copy from covan for shared server)
+#    - DEV_DB_PASSWORD, AUTH_DB_PASSWORD (tenant DB users)
+#    - Webhook endpoint in OutboxNotifications section
+
+# 3. Create databases and users on PostgreSQL
+./scripts/manage-tenants.sh create-db tenant2
+
+# 4. Run EF migrations and seed (from FreightOps dir, with tenant env)
+cd ../FreightOps
+docker compose --env-file ../freightops-infrastructure/tenants/tenant2/.env run --rm migrations
+docker compose --env-file ../freightops-infrastructure/tenants/tenant2/.env run --rm seed
+cd ../freightops-infrastructure
+
+# 5. Regenerate nginx config (add-tenant.sh does this automatically)
+./scripts/generate-nginx.sh
+
+# 6. Add domain to SSL cert (run from infra root)
+docker compose -f docker-compose.shared.yml --env-file .env.shared run --rm certbot \
+  certonly --webroot --webroot-path /var/www/certbot/ \
+  --non-interactive --agree-tos --expand \
+  -d covan.freightopsconnect.com -d tenant2.freightopsconnect.com
+
+# 7. Reload nginx
+docker compose -f docker-compose.shared.yml --env-file .env.shared exec nginx-proxy nginx -s reload
+
+# 8. Start the new tenant
+./scripts/manage-tenants.sh start tenant2
 ```
 
-Contents:
+## Certificate Renewal (Certbot)
+
+Certificates are renewed via `run-certbot.sh`, which reads domains from tenant `.env` files.
+
+### systemd timer (Amazon Linux)
+
+Create `/etc/systemd/system/certbot-renew.service`:
 
 ```ini
 [Unit]
@@ -96,19 +121,10 @@ Type=oneshot
 ExecStart=/home/docker/run-certbot.sh
 WorkingDirectory=/home/docker
 User=root
+Environment=COMPOSE_DIR=/home/docker
 ```
 
----
-
-# 3. Create the systemd Timer
-
-Create the timer that schedules the service.
-
-```bash
-sudo nano /etc/systemd/system/certbot-renew.timer
-```
-
-Contents:
+Create `/etc/systemd/system/certbot-renew.timer`:
 
 ```ini
 [Unit]
@@ -125,153 +141,54 @@ OnBootSec=10m
 WantedBy=timers.target
 ```
 
-### Timer Behavior
+Enable: `sudo systemctl enable --now certbot-renew.timer`
 
-| Setting              | Purpose                                            |
-| -------------------- | -------------------------------------------------- |
-| `OnCalendar`         | Runs at midnight and noon                          |
-| `RandomizedDelaySec` | Adds up to 1 hour of jitter to avoid mass renewals |
-| `AccuracySec`        | Allows systemd to group timers efficiently         |
-| `Persistent=true`    | Runs if a scheduled time was missed                |
-| `OnBootSec`          | Runs once shortly after system boot                |
-
----
-
-# 4. Enable the Timer
-
-Reload systemd:
+### Manual renewal
 
 ```bash
-sudo systemctl daemon-reload
+./run-certbot.sh
 ```
 
-Enable and start the timer:
-
-```bash
-sudo systemctl enable --now certbot-renew.timer
-```
-
----
-
-# 5. Verify Timer Status
-
-Check the next scheduled run:
-
-```bash
-systemctl list-timers certbot-renew.timer
-```
-
-Expected output includes:
+## Directory Structure
 
 ```
-certbot-renew.timer
+freightops-infrastructure/
+├── docker-compose.shared.yml    # nginx-proxy, certbot, pgadmin, watchtower
+├── docker-compose.tenant.yml    # api, daemon, dashboard (per-tenant)
+├── .env.shared                  # PGADMIN, DOCKER_REGISTRY
+├── tenants/
+│   ├── covan/
+│   │   └── .env                 # Tenant-specific config
+│   ├── tenant2/
+│   │   └── .env
+│   └── ...
+├── config/
+│   ├── nginx/
+│   │   ├── default.conf         # Generated - HTTP, ACME challenge
+│   │   └── ssl.conf             # Generated - HTTPS, per-tenant routing
+│   ├── certbot-conf/            # Let's Encrypt certificates
+│   └── certbot-www/             # ACME challenge webroot
+├── scripts/
+│   ├── manage-tenants.sh        # Main orchestration CLI
+│   ├── add-tenant.sh            # New tenant scaffolding
+│   ├── create-tenant-db.sh      # Create PostgreSQL DBs and users per tenant
+│   └── generate-nginx.sh        # Build nginx config from tenants
+└── run-certbot.sh               # Certificate renewal
 ```
 
----
+## Migration from Single-Tenant
 
-# 6. Test Manually
+If migrating from the original single-tenant setup:
 
-Run the renewal job immediately:
+1. Stop the old stack: `docker compose down`
+2. Create `tenants/covan/.env` (already done - migrated from root `.env`)
+3. Run `./scripts/generate-nginx.sh`
+4. Start shared: `./scripts/manage-tenants.sh shared-start`
+5. Start covan: `./scripts/manage-tenants.sh start covan`
+6. Verify https://covan.freightopsconnect.com
 
-```bash
-sudo systemctl start certbot-renew.service
-```
+## Important Notes
 
-View logs:
-
-```bash
-journalctl -u certbot-renew.service -f
-```
-
----
-
-# 7. Verify Certificates
-
-Certificates are stored in:
-
-```
-/home/docker/config/certbot-conf
-```
-
-Mounted into nginx as:
-
-```
-/etc/letsencrypt
-```
-
-nginx is reloaded automatically after renewal.
-
----
-
-# Important Note
-
-Avoid using:
-
-```
---force-renew
-```
-
-This forces certificate renewal every run and may trigger **Let's Encrypt rate limits**.
-
-Certbot automatically renews certificates **only when expiration is near**, so forcing renewal is unnecessary.
-
----
-
-# Architecture Overview
-
-```
-systemd timer
-      │
-      ▼
-certbot-renew.service
-      │
-      ▼
-run-certbot.sh
-      │
-      ├── checks docker compose stack
-      ├── starts stack if needed
-      ├── runs certbot container
-      └── reloads nginx
-```
-
----
-
-# Result
-
-Certificates are automatically:
-
-* Checked **twice daily**
-* Renewed **only when needed**
-* Reloaded into nginx **without downtime**
-* Logged through **systemd journal**
-
----
-
-# Useful Commands
-
-### View timer
-
-```
-systemctl list-timers
-```
-
-### View logs
-
-```
-journalctl -u certbot-renew.service
-```
-
-### Restart timer
-
-```
-sudo systemctl restart certbot-renew.timer
-```
-
-### Run renewal manually
-
-```
-sudo systemctl start certbot-renew.service
-```
-
----
-
+- **Network**: Tenant containers join the `freightops-proxy` network created by the shared stack. Start shared infrastructure before tenants.
+- **Paths**: For production at `/home/docker`, set `COMPOSE_DIR=/home/docker` or run from that directory.
+- **Dashboard**: Each tenant gets its own dashboard container. The `freightops-nginx` image uses `entrypoint.sh` to inject `VITE_API_HOST` and `VITE_BASE_URL` at runtime.

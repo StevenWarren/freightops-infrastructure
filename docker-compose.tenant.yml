@@ -1,0 +1,55 @@
+# Per-tenant services - api, daemon, dashboard
+# Run via manage-tenants.sh: TENANT_ENV_FILE=tenants/covan/.env docker compose -f docker-compose.tenant.yml --env-file tenants/covan/.env -p freightops-covan up -d
+
+services:
+  freightops-dashboard:
+    container_name: ${DASHBOARD_NAME}
+    image: ${DOCKER_REGISTRY}-nginx:latest
+    env_file: ${TENANT_ENV_FILE}
+    environment:
+      VITE_API_HOST: ${VITE_API_HOST}
+      VITE_BASE_URL: ${VITE_BASE_URL}
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  freightops-api:
+    container_name: ${API_NAME}
+    image: ${DOCKER_REGISTRY}-api:latest
+    restart: unless-stopped
+    env_file: ${TENANT_ENV_FILE}
+    environment:
+      ConnectionStrings__PgConnection: ${ConnectionStrings__PgConnection}
+      ConnectionStrings__AuthConnection: ${ConnectionStrings__AuthConnection}
+      ConnectionStrings__CorpConnection: ${ConnectionStrings__CorpConnection}
+      PORT: 5000
+      ASPNETCORE_HTTP_PORTS: 5000
+      ASPNETCORE_ENVIRONMENT: Development
+    networks:
+      - proxy
+
+  freightops-daemon:
+    container_name: ${DAEMON_NAME}
+    image: ${DOCKER_REGISTRY}-daemon:latest
+    env_file: ${TENANT_ENV_FILE}
+    environment:
+      ConnectionStrings__PgConnection: ${ConnectionStrings__PgConnection}
+      ConnectionStrings__AuthConnection: ${ConnectionStrings__AuthConnection}
+      ConnectionStrings__CorpConnection: ${ConnectionStrings__CorpConnection}
+      OutboxNotifications__Status: ${OutboxNotifications__Status}
+      OutboxNotifications__Notification__Type: ${OutboxNotifications__Notification__Type}
+      OutboxNotifications__Notification__Configuration__endpoint: ${OutboxNotifications__Notification__Configuration__endpoint}
+      OutboxNotifications__Notification__Configuration__method: ${OutboxNotifications__Notification__Configuration__method}
+      OutboxNotifications__Notification__Configuration__RequiresAuth: ${OutboxNotifications__Notification__Configuration__RequiresAuth}
+      OutboxNotifications__Notification__Configuration__Params__0__Key: ${OutboxNotifications__Notification__Configuration__Params__0__Key}
+      OutboxNotifications__Notification__Configuration__Params__0__Value: ${OutboxNotifications__Notification__Configuration__Params__0__Value}
+      OutboxNotifications__Notification__Configuration__Params__1__Key: ${OutboxNotifications__Notification__Configuration__Params__1__Key}
+      OutboxNotifications__Notification__Configuration__Params__1__Value: ${OutboxNotifications__Notification__Configuration__Params__1__Value}
+      ASPNETCORE_ENVIRONMENT: Development
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: freightops-proxy

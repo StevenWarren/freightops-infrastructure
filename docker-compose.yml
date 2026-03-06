@@ -1,3 +1,6 @@
+# DEPRECATED: Use docker-compose.shared.yml + docker-compose.tenant.yml with manage-tenants.sh
+# See README.md for multi-tenant setup.
+
 name: freightops-covan
 
 services:

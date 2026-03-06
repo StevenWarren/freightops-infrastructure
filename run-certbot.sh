@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE_DIR="/home/docker"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_DIR="${COMPOSE_DIR:-$SCRIPT_DIR}"
 
 cd "$COMPOSE_DIR"
 
@@ -17,25 +18,54 @@ fi
 
 echo "Using compose command: $DC"
 
-# Check if nginx container is running
-RUNNING=$($DC ps --services --filter "status=running" | grep -c "^nginx$" || true)
+# Build domain list from tenants
+TENANTS_DIR="$COMPOSE_DIR/tenants"
+CERTBOT_DOMAINS=()
+for tenant_dir in "$TENANTS_DIR"/*/; do
+  [ -d "$tenant_dir" ] || continue
+  env_file="${tenant_dir}.env"
+  [ -f "$env_file" ] || continue
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^TENANT_DOMAIN=(.+)$ ]]; then
+      domain=$(echo "${BASH_REMATCH[1]}" | tr -d '"' | tr -d "'" | tr -d '\r\n')
+      CERTBOT_DOMAINS+=("$domain")
+      break
+    fi
+  done < "$env_file"
+done
+
+if [ ${#CERTBOT_DOMAINS[@]} -eq 0 ]; then
+  echo "No tenants found. Using covan.freightopsconnect.com as fallback."
+  CERTBOT_DOMAINS=("covan.freightopsconnect.com")
+fi
+
+# Build certbot -d arguments
+CERTBOT_ARGS=("certonly" "--webroot" "--webroot-path" "/var/www/certbot/" "--non-interactive" "--agree-tos")
+for domain in "${CERTBOT_DOMAINS[@]}"; do
+  CERTBOT_ARGS+=("-d" "$domain")
+done
+
+echo "Domains: ${CERTBOT_DOMAINS[*]}"
+
+# Check if nginx-proxy is running
+RUNNING=$($DC -f docker-compose.shared.yml --env-file .env.shared ps --services --filter "status=running" 2>/dev/null | grep -c "nginx-proxy" || true)
 
 if [ "$RUNNING" -eq 0 ]; then
-  echo "Stack not running. Starting stack..."
-  $DC up -d
+  echo "Shared stack not running. Starting shared stack..."
+  $DC -f docker-compose.shared.yml --env-file .env.shared up -d
 else
-  echo "Stack already running."
+  echo "Shared stack already running."
 fi
 
 echo "Running certbot..."
-$DC run --rm certbot
+$DC -f docker-compose.shared.yml --env-file .env.shared run --rm certbot "${CERTBOT_ARGS[@]}"
 
-echo "Reloading nginx..."
-if $DC exec -T nginx nginx -s reload 2>/dev/null; then
-  echo "nginx reloaded successfully."
+echo "Reloading nginx-proxy..."
+if $DC -f docker-compose.shared.yml --env-file .env.shared exec -T nginx-proxy nginx -s reload 2>/dev/null; then
+  echo "nginx-proxy reloaded successfully."
 else
-  echo "Reload failed, restarting nginx..."
-  $DC restart nginx
+  echo "Reload failed, restarting nginx-proxy..."
+  $DC -f docker-compose.shared.yml --env-file .env.shared restart nginx-proxy
 fi
 
 echo "Certificate process complete."
