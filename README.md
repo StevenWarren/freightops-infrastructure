@@ -64,6 +64,7 @@ cd /home/docker
 | `./scripts/manage-tenants.sh logs <tenant-id>` | Follow tenant logs |
 | `./scripts/manage-tenants.sh add <tenant-id>` | Add a new tenant |
 | `./scripts/manage-tenants.sh create-db <tenant-id>` | Create PostgreSQL databases and users for a tenant |
+| `./scripts/manage-tenants.sh migrate <tenant-id>` | Run EF migrations and Marten seed (uses freightops-migrations image) |
 | `./scripts/manage-tenants.sh list` | List all tenants |
 
 ## Adding a New Tenant
@@ -80,11 +81,9 @@ cd /home/docker
 # 3. Create databases and users on PostgreSQL
 ./scripts/manage-tenants.sh create-db tenant2
 
-# 4. Run EF migrations and seed (from FreightOps dir, with tenant env)
-cd ../FreightOps
-docker compose --env-file ../freightops-infrastructure/tenants/tenant2/.env run --rm migrations
-docker compose --env-file ../freightops-infrastructure/tenants/tenant2/.env run --rm seed
-cd ../freightops-infrastructure
+# 4. Run EF migrations and Marten seed (uses freightops-migrations image)
+#    Build/push the image from FreightOps repo first (see FreightOps/.github/workflows/docker-build-migrations.yml)
+./scripts/manage-tenants.sh migrate tenant2
 
 # 5. Regenerate nginx config (add-tenant.sh does this automatically)
 ./scripts/generate-nginx.sh
@@ -186,6 +185,18 @@ If migrating from the original single-tenant setup:
 4. Start shared: `./scripts/manage-tenants.sh shared-start`
 5. Start covan: `./scripts/manage-tenants.sh start covan`
 6. Verify https://covan.freightopsconnect.com
+
+## Migrations Image
+
+Production runs migrations from the `manicapps904/freightops-migrations` image (no FreightOps source required). Build and push from the FreightOps repo:
+
+```bash
+# From FreightOps repo root
+docker build -f Dockerfile.migrations -t manicapps904/freightops-migrations:latest .
+docker push manicapps904/freightops-migrations:latest
+```
+
+Or trigger the GitHub workflow `docker-build-migrations.yml` (workflow_dispatch).
 
 ## Important Notes
 

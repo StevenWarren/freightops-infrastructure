@@ -111,6 +111,38 @@ cmd_create_db() {
   exec "$SCRIPT_DIR/create-tenant-db.sh" "$tenant_id"
 }
 
+cmd_migrate() {
+  local tenant_id="$1"
+  if [ -z "$tenant_id" ]; then
+    echo "Usage: $0 migrate <tenant-id>"
+    exit 1
+  fi
+  local env_file="$TENANTS_DIR/$tenant_id/.env"
+  if [ ! -f "$env_file" ]; then
+    echo "ERROR: Tenant '$tenant_id' not found (no $env_file)"
+    exit 1
+  fi
+  # Load DOCKER_REGISTRY from .env.shared or tenant env
+  local registry="manicapps904/freightops"
+  [ -f ".env.shared" ] && source .env.shared 2>/dev/null || true
+  [ -n "${DOCKER_REGISTRY:-}" ] && registry="$DOCKER_REGISTRY"
+  source "$env_file" 2>/dev/null || true
+  [ -n "${DOCKER_REGISTRY:-}" ] && registry="$DOCKER_REGISTRY"
+  # Expand ${VAR} refs in .env for docker (docker run --env-file does not expand)
+  local expanded_env
+  expanded_env=$(mktemp)
+  set -a
+  source "$env_file" 2>/dev/null || true
+  set +a
+  envsubst < "$env_file" > "$expanded_env" 2>/dev/null || cp "$env_file" "$expanded_env"
+  echo "Running migrations for tenant '$tenant_id' (image: ${registry}-migrations:latest)..."
+  docker run --rm \
+    --env-file "$expanded_env" \
+    --network host \
+    "${registry}-migrations:latest"
+  rm -f "$expanded_env"
+}
+
 cmd_list() {
   echo "Tenants:"
   for t in $(list_tenants); do
@@ -162,6 +194,13 @@ case "$CMD" in
     fi
     cmd_create_db "$TENANT_ID"
     ;;
+  migrate)
+    if [ -z "$TENANT_ID" ]; then
+      echo "Usage: $0 migrate <tenant-id>"
+      exit 1
+    fi
+    cmd_migrate "$TENANT_ID"
+    ;;
   list)  cmd_list ;;
   shared-start)  cmd_shared_start ;;
   shared-stop)   cmd_shared_stop ;;
@@ -177,6 +216,7 @@ case "$CMD" in
     echo "  logs <tenant-id>    Follow logs for a tenant."
     echo "  add <tenant-id>      Add a new tenant (scaffold .env)."
     echo "  create-db <tenant-id> Create PostgreSQL databases and users for a tenant."
+    echo "  migrate <tenant-id>  Run EF migrations and Marten seed (uses freightops-migrations image)."
     echo "  list                List all tenants."
     echo "  shared-start        Start shared infrastructure (nginx, certbot, pgadmin, watchtower)."
     echo "  shared-stop         Stop shared infrastructure."
