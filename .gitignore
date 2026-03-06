@@ -1,1 +1,3 @@
 */certbot-conf/*
+config/nginx/ssl.conf
+config/nginx/default.conf
