@@ -34,6 +34,7 @@ run_tenant() {
   local cmd="$2"
   shift 2
   local env_file="$TENANTS_DIR/$tenant_id/.env"
+  echo "$env_file"
   if [ ! -f "$env_file" ]; then
     echo "ERROR: Tenant '$tenant_id' not found (no $env_file)"
     exit 1

@@ -52,14 +52,14 @@ services:
       - proxy
     restart: unless-stopped
 
-  watchtower:
-    image: containrrr/watchtower
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker/config.json:/config.json
-    command: --interval 60 --cleanup
-    networks:
-      - proxy
+#  watchtower:
+#    image: containrrr/watchtower
+#    volumes:
+#      - /var/run/docker.sock:/var/run/docker.sock
+#      - /root/.docker/config.json:/config.json
+#    command: --interval 60 --cleanup
+#    networks:
+#      - proxy
 
 networks:
   proxy:
